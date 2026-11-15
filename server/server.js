@@ -1,0 +1,180 @@
+/**
+ * 情绪烘干机 - 极简后端
+ * 仅提供「实时在线人数」与「历史浏览人次」统计，内存存储，无需数据库。
+ *
+ * 部署步骤（Railway / Render / 本地均可）：
+ * 1. 进入 server 目录：cd server
+ * 2. 安装依赖：npm install
+ * 3. 启动服务：npm start  （默认监听 3000 端口，可用 PORT 环境变量覆盖）
+ * 4. 前端 app.js 顶部常量 API_BASE 改为本服务地址
+ *    - 本地开发：http://localhost:3000
+ *    - 部署后：https://你的域名
+ *
+ * 说明：内存存储，重启后在线数和浏览量归零，属预期行为。
+ *       后端日志只打印 sessionId 与时间，绝不打印用户输入内容。
+ */
+// 简易 .env 加载（无需 dotenv 依赖，自动读取 server/.env）
+const fs = require('fs');
+const path = require('path');
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+    const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
+    if (m && !process.env[m[1]]) {
+      process.env[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
+    }
+  });
+}
+
+const express = require('express');
+const cors = require('cors');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 允许前端跨域访问
+app.use(cors());
+app.use(express.json());
+
+// 健康检查
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+/* ===== 树洞：公共匿名留言墙（内存存储） =====
+ * 内存变量存储，重启后清空，属演示阶段预期行为。
+ * 日志只打印接口调用与时间，绝不打印言论内容，守住匿名承诺。
+ */
+let treeholePosts = [];
+
+// 生成匿名标识，不关联任何身份信息
+function genAnonTag() {
+  return '匿名网友 #' + Math.random().toString(36).slice(2, 5);
+}
+
+// 返回按时间倒序的列表副本
+function sortedTreehole() {
+  return treeholePosts.slice().sort((a, b) => b.time - a.time);
+}
+
+// 获取所有言论
+app.get('/api/treehole', (req, res) => {
+  console.log(`[treehole/get] time=${new Date().toISOString()}`);
+  res.json({ posts: sortedTreehole() });
+});
+
+// 发表言论：服务端生成 id、时间戳、匿名标识
+app.post('/api/treehole', (req, res) => {
+  const content = req.body && req.body.content;
+  if (!content || typeof content !== 'string' || content.trim().length === 0) {
+    return res.status(400).json({ error: '内容为空' });
+  }
+  const post = {
+    id: 'th_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    content: content.trim().slice(0, 200),
+    anon: genAnonTag(),
+    time: Date.now(),
+    likes: 0,
+    replies: [],
+  };
+  treeholePosts.unshift(post);
+  // 日志不打印 content
+  console.log(`[treehole/post] id=${post.id} time=${new Date(post.time).toISOString()}`);
+  res.json({ posts: sortedTreehole() });
+});
+
+// 点赞 toggle：body { liked: true/false }，true +1，false -1
+app.post('/api/treehole/:id/like', (req, res) => {
+  const id = req.params.id;
+  const liked = !!(req.body && req.body.liked);
+  const post = treeholePosts.find(p => p.id === id);
+  if (!post) return res.status(404).json({ error: 'not found' });
+  if (liked) post.likes = (post.likes || 0) + 1;
+  else post.likes = Math.max(0, (post.likes || 0) - 1);
+  console.log(`[treehole/like] id=${id} liked=${liked} time=${new Date().toISOString()}`);
+  res.json({ likes: post.likes });
+});
+
+// 匿名回复：body { content }
+app.post('/api/treehole/:id/reply', (req, res) => {
+  const id = req.params.id;
+  const content = req.body && req.body.content;
+  if (!content || typeof content !== 'string' || content.trim().length === 0) {
+    return res.status(400).json({ error: '内容为空' });
+  }
+  const post = treeholePosts.find(p => p.id === id);
+  if (!post) return res.status(404).json({ error: 'not found' });
+  post.replies = post.replies || [];
+  post.replies.push({
+    content: content.trim().slice(0, 100),
+    anon: genAnonTag(),
+    time: Date.now(),
+  });
+  // 日志不打印 content
+  console.log(`[treehole/reply] id=${id} time=${new Date().toISOString()}`);
+  res.json({ posts: sortedTreehole() });
+});
+
+/* ===== 情绪转化：调用智谱 GLM API =====
+ * API Key 从环境变量读取（.env 文件，已被 .gitignore 忽略），绝不硬编码在代码中。
+ * 本地开发：在 server/ 目录下创建 .env 文件，写入 GLM_API_KEY=你的key
+ * Node 22 内置全局 fetch，无需额外依赖。
+ */
+const GLM_API_KEY = process.env.GLM_API_KEY || '';
+const GLM_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+const GLM_MODEL = 'glm-4-flash';
+const GLM_SYSTEM_PROMPT = '你是一个温暖、幽默的解压助手。用户会向你倾诉生活和职场的烦恼。请你把他的话改写成一段搞笑脱口秀或者一首豁达的诗。要求：不说教、不评判，带一点发疯文学或苏东坡的豁达感，字数100字以内。';
+
+app.post('/api/transform', async (req, res) => {
+  const input = req.body && req.body.input;
+  if (!input || typeof input !== 'string' || input.trim().length === 0) {
+    return res.status(400).json({ error: '内容为空' });
+  }
+  // 日志不打印用户输入内容，守住隐私承诺
+  console.log(`[transform] time=${new Date().toISOString()}`);
+
+  try {
+    const resp = await fetch(GLM_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + GLM_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: GLM_MODEL,
+        messages: [
+          { role: 'system', content: GLM_SYSTEM_PROMPT },
+          { role: 'user', content: input.trim().slice(0, 500) },
+        ],
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new Error('GLM HTTP ' + resp.status);
+    }
+
+    const data = await resp.json();
+    const content = data.choices &&
+      data.choices[0] &&
+      data.choices[0].message &&
+      data.choices[0].message.content;
+
+    if (!content || !content.trim()) {
+      throw new Error('GLM 返回内容为空');
+    }
+
+    res.json({ type: 'ai', content: content.trim() });
+  } catch (e) {
+    // 错误兜底：不让接口崩溃，返回兜底文案
+    console.error('[transform/error]', e.message);
+    res.json({
+      type: 'ai',
+      content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。',
+    });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`情绪烘干机后端已启动：http://localhost:${PORT}`);
+  console.log(`部署后请把前端 app.js 的 API_BASE 改为本服务地址。`);
+});

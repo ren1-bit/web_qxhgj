@@ -1,0 +1,17 @@
+{
+  "name": "emotion-dryer-server",
+  "version": "1.0.0",
+  "description": "情绪烘干机 - 极简后端（在线人数 + 浏览量统计）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

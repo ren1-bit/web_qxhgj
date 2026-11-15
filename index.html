@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#f7f4ef" />
+  <title>情绪烘干机 · 把今天的霉运烘干</title>
+  <meta name="description" content="一个面向打工人和学生的解压公益网页。把倒霉事扔进来，烘干成诗、段子或治愈色卡。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 飞灰画布（全屏覆盖，粉碎动画用） -->
+  <canvas id="ash-canvas"></canvas>
+
+  <!-- ========== 入口页 ========== -->
+  <section id="view-entry" class="view active">
+    <div class="entry-wrap">
+      <div class="logo-drum" aria-hidden="true">
+        <div class="drum-circle">
+          <span class="drum-dot d1"></span>
+          <span class="drum-dot d2"></span>
+          <span class="drum-dot d3"></span>
+        </div>
+      </div>
+      <h1 class="brand">情绪烘干机</h1>
+      <p class="tagline">把今天的霉运，扔进滚筒里转一转</p>
+      <p class="sub-tagline">出来的时候，就轻了。</p>
+
+      <div class="entry-actions">
+        <button class="btn btn-primary btn-login" data-provider="wechat">
+          <span class="ico-wechat"></span>微信登录
+        </button>
+        <button class="btn btn-primary btn-login" data-provider="qq">
+          <span class="ico-qq"></span>QQ 登录
+        </button>
+        <button class="btn btn-ghost btn-guest">游客进入</button>
+      </div>
+      <p class="entry-tip">登录后可保存你的烘干记录 · 游客也可使用全部功能</p>
+
+      <!-- 授权中动画 -->
+      <div id="auth-overlay" class="auth-overlay">
+        <div class="auth-card">
+          <div class="auth-spinner"></div>
+          <p class="auth-text">授权中…</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 身份设置页 ========== -->
+  <section id="view-setup" class="view">
+    <div class="setup-wrap">
+      <h2 class="setup-title">设置一下你的样子</h2>
+      <p class="setup-sub">随便填，随时可改</p>
+
+      <div class="setup-block">
+        <label class="block-label">头像</label>
+        <div class="avatar-picker" id="avatar-picker">
+          <button class="avatar-opt" data-avatar="male" type="button"></button>
+          <button class="avatar-opt" data-avatar="female" type="button"></button>
+        </div>
+      </div>
+
+      <div class="setup-block">
+        <label class="block-label" for="input-nick">昵称</label>
+        <input id="input-nick" type="text" maxlength="12" placeholder="留空则自动生成" autocomplete="off" />
+      </div>
+
+      <div class="setup-block">
+        <label class="block-label">性别</label>
+        <div class="gender-picker" id="gender-picker">
+          <button class="gender-opt" data-gender="male" type="button">男</button>
+          <button class="gender-opt" data-gender="female" type="button">女</button>
+          <button class="gender-opt active" data-gender="none" type="button">保持神秘</button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-setup-done">进入烘干机</button>
+    </div>
+  </section>
+
+  <!-- ========== 主容器（登录后） ========== -->
+  <div id="app-main" class="app-main hidden">
+    <!-- 页头 -->
+    <header class="app-header">
+      <div class="header-left">
+        <span class="header-brand" data-nav="dryer">情绪烘干机</span>
+      </div>
+      <nav class="header-nav">
+        <button class="nav-btn active" data-nav="dryer">烘干</button>
+        <button class="nav-btn" data-nav="treehole">树洞</button>
+        <button class="nav-btn nav-records" data-nav="records">我的记录</button>
+      </nav>
+      <div class="header-right">
+        <div class="user-chip" id="user-chip">
+          <span class="user-avatar" id="user-avatar"></span>
+          <span class="user-name" id="user-name"></span>
+          <span class="user-gender hidden" id="user-gender"></span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 主功能：情绪烘干机 -->
+    <section id="view-dryer" class="view view-main active">
+      <div class="dryer-wrap">
+        <div class="dryer-stage" id="dryer-stage">
+          <!-- 输入态 -->
+          <div class="stage-input" id="stage-input">
+            <p class="dryer-hint-top">今天怎么了？</p>
+            <textarea id="emotion-input" class="emotion-input" rows="4" maxlength="300" placeholder="把今天的倒霉事写下来"></textarea>
+            <p class="privacy-inline">我们不存储你的原文用于其他用途，关掉即消失。</p>
+
+            <div class="intensity-row">
+              <span class="intensity-label">情绪强度</span>
+              <input type="range" id="intensity" min="1" max="5" value="3" class="intensity-slider" />
+              <span class="intensity-val" id="intensity-val">3</span>
+            </div>
+
+            <button class="btn btn-primary btn-block" id="btn-dry">开始烘干</button>
+          </div>
+
+          <!-- 烘干中动画 -->
+          <div class="stage-drying hidden" id="stage-drying">
+            <div class="drying-drum">
+              <div class="drum-outer">
+                <div class="drum-inner-spin">
+                  <span class="drum-dot d1"></span>
+                  <span class="drum-dot d2"></span>
+                  <span class="drum-dot d3"></span>
+                  <span class="drum-dot d4"></span>
+                </div>
+              </div>
+            </div>
+            <p class="drying-text">烘干中…</p>
+            <p class="drying-sub">霉运正在被热风带走</p>
+          </div>
+
+          <!-- 结果态 -->
+          <div class="stage-result hidden" id="stage-result">
+            <div class="result-card" id="result-card">
+              <div class="result-type-tag" id="result-type-tag"></div>
+              <div class="result-body" id="result-body"></div>
+            </div>
+            <div class="result-actions">
+              <button class="btn btn-ghost" id="btn-retry">再来一版</button>
+              <button class="btn btn-danger" id="btn-shred">一键粉碎</button>
+            </div>
+          </div>
+
+          <!-- 粉碎后分享卡片 -->
+          <div class="stage-share hidden" id="stage-share">
+            <div class="share-card" id="share-card">
+              <div class="share-mark">今日已烘干</div>
+              <div class="share-emoji" id="share-emoji">🍃</div>
+              <p class="share-text" id="share-text">今天的霉运，到此为止。</p>
+              <p class="share-date" id="share-date"></p>
+              <div class="share-brand">情绪烘干机 · 公益解压</div>
+            </div>
+            <button class="btn btn-primary" id="btn-back-home">回到首页</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 树洞 -->
+    <section id="view-treehole" class="view view-main">
+      <div class="treehole-wrap">
+        <div class="treehole-head">
+          <h2 class="th-title">树洞</h2>
+          <p class="th-sub">匿名公共留言墙 · 不记录身份</p>
+        </div>
+
+        <div class="th-post">
+          <textarea id="th-input" class="th-input" rows="3" maxlength="200" placeholder="说点什么吧，这里没人认识你"></textarea>
+          <div class="th-post-bar">
+            <span class="th-warn">这里不存储你的身份信息，请勿发布个人隐私</span>
+            <button class="btn btn-primary btn-sm" id="btn-th-post">发表</button>
+          </div>
+        </div>
+
+        <div class="th-tabs">
+          <button class="th-tab active" data-sort="latest">最新</button>
+          <button class="th-tab" data-sort="hot">最热</button>
+        </div>
+
+        <div class="th-list" id="th-list"></div>
+      </div>
+    </section>
+
+    <!-- 我的情绪记录 -->
+    <section id="view-records" class="view view-main">
+      <div class="records-wrap">
+        <div class="records-head">
+          <h2 class="rc-title">我的情绪记录</h2>
+          <button class="btn btn-ghost btn-sm hidden" id="btn-clear-records">清空全部</button>
+        </div>
+        <div class="records-list" id="records-list"></div>
+      </div>
+    </section>
+
+    <!-- 页脚 -->
+    <footer class="app-footer">
+      <p class="footer-privacy">原文仅用于当次生成，不留存、不用于训练；树洞匿名发布，不记录身份。</p>
+      <p class="footer-desc">情绪烘干机 · 公益解压项目，非心理治疗工具。如需专业帮助请拨打全国心理援助热线 12356。</p>
+    </footer>
+  </div>
+
+  <!-- Toast 提示 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
