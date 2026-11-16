@@ -116,11 +116,11 @@ app.post('/api/treehole/:id/reply', (req, res) => {
 });
 
 /* ===== 情绪转化：调用智谱 GLM API =====
- * API Key 从环境变量读取（.env 文件，已被 .gitignore 忽略），绝不硬编码在代码中。
- * 本地开发：在 server/ 目录下创建 .env 文件，写入 GLM_API_KEY=你的key
- * Node 22 内置全局 fetch，无需额外依赖。
+ * API Key 从环境变量 process.env.GLM_API_KEY 读取（云端平台配置或本地 server/.env）。
+ * 绝不硬编码在代码中，绝不暴露给前端。
+ * 请求地址：https://open.bigmodel.cn/api/paas/v4/chat/completions （智谱官方，按量付费 Key 用此地址）
+ * Node 18+ 内置全局 fetch，无需额外依赖。
  */
-const GLM_API_KEY = process.env.GLM_API_KEY || '';
 const GLM_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 const GLM_MODEL = 'glm-4-flash';
 const GLM_SYSTEM_PROMPT = '你是一个温暖、幽默的解压助手。用户会向你倾诉生活和职场的烦恼。请你把他的话改写成一段搞笑脱口秀或者一首豁达的诗。要求：不说教、不评判，带一点发疯文学或苏东坡的豁达感，字数100字以内。';
@@ -133,11 +133,21 @@ app.post('/api/transform', async (req, res) => {
   // 日志不打印用户输入内容，守住隐私承诺
   console.log(`[transform] time=${new Date().toISOString()}`);
 
+  // 实时读取环境变量（避免模块加载时机问题，兼容云端延迟注入）
+  const apiKey = process.env.GLM_API_KEY;
+  if (!apiKey || !apiKey.trim()) {
+    console.error('[transform/error] 环境变量 GLM_API_KEY 未配置或为空');
+    return res.status(500).json({
+      error: '后端未配置 GLM_API_KEY 环境变量',
+      errorDetail: 'process.env.GLM_API_KEY is empty. 请在云平台环境变量中配置 GLM_API_KEY',
+    });
+  }
+
   try {
     const resp = await fetch(GLM_URL, {
       method: 'POST',
       headers: {
-        'Authorization': 'Bearer ' + GLM_API_KEY,
+        'Authorization': 'Bearer ' + apiKey.trim(),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -149,32 +159,57 @@ app.post('/api/transform', async (req, res) => {
       }),
     });
 
+    // 先读取响应体文本（无论成功失败），再统一解析
+    const respText = await resp.text();
+    let respData = null;
+    try { respData = JSON.parse(respText); } catch (_) { /* 非 JSON 响应 */ }
+
     if (!resp.ok) {
-      throw new Error('GLM HTTP ' + resp.status);
+      // 智谱错误格式通常为 { "error": { "code": "1113", "message": "余额不足" } } 或 { "msg": "..." }
+      const glmErr = respData && (respData.error || {});
+      const errMsg = (glmErr.message) || (respData && respData.msg) || respText;
+      console.error(`[transform/error] HTTP ${resp.status} | 智谱返回:`, errMsg);
+      return res.status(resp.status).json({
+        error: `GLM 接口返回 HTTP ${resp.status}`,
+        errorDetail: typeof errMsg === 'string' ? errMsg.slice(0, 500) : JSON.stringify(errMsg).slice(0, 500),
+        glmCode: glmErr.code || (respData && respData.code) || null,
+      });
     }
 
-    const data = await resp.json();
-    const content = data.choices &&
-      data.choices[0] &&
-      data.choices[0].message &&
-      data.choices[0].message.content;
+    const content = respData &&
+      respData.choices &&
+      respData.choices[0] &&
+      respData.choices[0].message &&
+      respData.choices[0].message.content;
 
     if (!content || !content.trim()) {
-      throw new Error('GLM 返回内容为空');
+      console.error('[transform/error] GLM 返回内容为空，原始响应:', respText.slice(0, 500));
+      return res.status(502).json({
+        error: 'GLM 返回内容为空',
+        errorDetail: respText.slice(0, 500),
+      });
     }
 
     res.json({ type: 'ai', content: content.trim() });
   } catch (e) {
-    // 错误兜底：不让接口崩溃，返回兜底文案
-    console.error('[transform/error]', e.message);
-    res.json({
-      type: 'ai',
-      content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。',
+    // 网络异常、超时、DNS 解析失败等
+    console.error('[transform/error] 网络异常:', e.name, e.message);
+    res.status(500).json({
+      error: '调用 GLM 网络异常',
+      errorDetail: `${e.name}: ${e.message}`,
     });
   }
 });
 
 app.listen(PORT, () => {
   console.log(`情绪烘干机后端已启动：http://localhost:${PORT}`);
-  console.log(`部署后请把前端 app.js 的 API_BASE 改为本服务地址。`);
+  // 打印 GLM_API_KEY 配置状态（只显示前4位用于核对，不泄露完整 Key）
+  const k = process.env.GLM_API_KEY || '';
+  if (k) {
+    console.log(`GLM_API_KEY 已配置 (前4位: ${k.slice(0, 4)}... 长度 ${k.length})`);
+  } else {
+    console.warn('⚠️  GLM_API_KEY 未配置！/api/transform 将无法调用智谱 AI。');
+    console.warn('   本地：在 server/.env 写入 GLM_API_KEY=你的key');
+    console.warn('   云端：在平台环境变量中配置 GLM_API_KEY');
+  }
 });

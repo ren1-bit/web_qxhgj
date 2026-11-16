@@ -333,12 +333,19 @@ async function generateResult(input, intensity) {
       body: JSON.stringify({ input, intensity }),
     });
     const data = await res.json();
-    if (data && data.content) {
+    if (res.ok && data && data.content) {
       return { type: 'ai', content: data.content };
     }
-    throw new Error('AI 返回为空');
+    // 后端返回了错误信息，打印到控制台方便排查
+    const errMsg = (data && (data.errorDetail || data.error)) || 'AI 返回为空';
+    console.error('[transform/前端] 后端报错:', data && data.error, '| 详情:', errMsg);
+    if (data && data.error) toast('AI 转化失败：' + data.error + '（详情见控制台 F12）');
+    // 仍返回兜底文案，保证体验不中断
+    return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
   } catch (e) {
-    // 前端兜底（后端不可达时）
+    // 后端完全不可达（网络错误/CORS）
+    console.error('[transform/前端] 请求失败:', e.name, e.message);
+    toast('AI 转化失败：无法连接后端');
     return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
   }
 }
