@@ -208,8 +208,34 @@ app.post('/api/transform', async (req, res) => {
   }
 });
 
+/* ===== 托管前端静态文件（单端口同源部署）=====
+ * 云端 Cloady / 单端口平台：同一个 Express 服务同时提供 API 与前端页面，
+ * 前端 API_BASE 探测同源 /api/health 即可命中，无需跨域、无需单独静态托管。
+ * 安全：只白名单 index.html / styles.css / app.js 三个文件，
+ *       绝不暴露 server 目录或 .env（内含 API Key）。
+ */
+const FRONTEND_ROOT = path.join(__dirname, '..');
+const STATIC_WHITELIST = {
+  '/': 'index.html',
+  '/index.html': 'index.html',
+  '/styles.css': 'styles.css',
+  '/app.js': 'app.js',
+  '/favicon.ico': 'favicon.ico',
+};
+for (const [route, file] of Object.entries(STATIC_WHITELIST)) {
+  app.get(route, (req, res) => {
+    const full = path.join(FRONTEND_ROOT, file);
+    if (fs.existsSync(full)) {
+      res.sendFile(full);
+    } else {
+      res.status(404).send('Not Found');
+    }
+  });
+}
+
 app.listen(PORT, () => {
   console.log(`情绪烘干机后端已启动：http://localhost:${PORT}`);
+  console.log('前端页面与 API 均由本服务提供（同源部署）。');
   // 打印 GLM_API_KEY 配置状态（只显示前4位用于核对，不泄露完整 Key）
   const k = process.env.GLM_API_KEY || '';
   if (k) {

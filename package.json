@@ -1,0 +1,18 @@
+{
+  "name": "emotion-dryer",
+  "version": "1.0.0",
+  "description": "情绪烘干机 · 公益解压网页（前端 + API 单端口同源服务）",
+  "private": true,
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node server/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

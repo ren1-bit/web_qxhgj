@@ -5,18 +5,20 @@
 
 /* ===== 后端地址（运行时自动探测，兼容本地 / 静态预览 / 云端） =====
  * 启动时依次探测候选地址，第一个 /api/health 可用的即采用。
+ * 云端已改为「前端+API 单端口同源部署」：页面和 /api/* 在同一域名下，
+ * 因此云端优先探测同源 ''，命中即用，无需跨域、无需等待 localhost 超时。
  * 候选顺序：
  *   1) window.API_BASE_OVERRIDE —— 手动指定（前后端分离部署时在 index.html 配置）
- *   2) http://localhost:3000     —— 本地开发 / WorkBuddy 预览 / 静态快照
- *   3) ''（同源）                —— 云端前后端同源部署
- * 这样无论从哪个地址打开，都能自动找到后端，不再依赖域名猜测。
+ *   2) 本地/预览 → http://localhost:3000 优先；云端 → 同源 '' 优先
+ *   3) 另一个候选兜底
  */
+function isLocalEnv() {
+  const h = location.hostname;
+  return location.protocol === 'file:' || h === 'localhost' || h === '127.0.0.1';
+}
 let API_BASE = (function () {
   if (window.API_BASE_OVERRIDE) return String(window.API_BASE_OVERRIDE).replace(/\/+$/, '');
-  // 初始猜一个：本地地址优先（覆盖绝大多数本地/预览场景）
-  const h = location.hostname;
-  const isLocal = location.protocol === 'file:' || h === 'localhost' || h === '127.0.0.1';
-  return isLocal ? 'http://localhost:3000' : '';
+  return isLocalEnv() ? 'http://localhost:3000' : '';
 })();
 
 // 探测后端地址：返回真正可用的 API_BASE
@@ -24,8 +26,14 @@ async function detectApiBase() {
   if (window.API_BASE_OVERRIDE) return API_BASE; // 手动指定则不再探测
   const candidates = [];
   const push = (v) => { if (!candidates.includes(v)) candidates.push(v); };
-  push('http://localhost:3000'); // 本地/预览
-  push('');                       // 同源（云端）
+  // 本地/预览先试 localhost，云端先试同源，减少无谓超时等待
+  if (isLocalEnv()) {
+    push('http://localhost:3000');
+    push('');
+  } else {
+    push('');
+    push('http://localhost:3000');
+  }
   for (const c of candidates) {
     try {
       const ctrl = new AbortController();
