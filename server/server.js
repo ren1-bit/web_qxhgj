@@ -151,20 +151,52 @@ app.post('/api/transform', async (req, res) => {
   }
 
   try {
-    const resp = await fetch(GLM_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + apiKey.trim(),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: GLM_MODEL,
-        messages: [
-          { role: 'system', content: GLM_SYSTEM_PROMPT },
-          { role: 'user', content: input.trim().slice(0, 500) },
-        ],
-      }),
+    // 带重试的请求：云端沙箱偶发网络抖动（fetch failed），自动重试以消化。
+    // 每次请求独立 controller + 超时；仅对网络层异常重试，HTTP 错误不重试。
+    const reqBody = JSON.stringify({
+      model: GLM_MODEL,
+      messages: [
+        { role: 'system', content: GLM_SYSTEM_PROMPT },
+        { role: 'user', content: input.trim().slice(0, 500) },
+      ],
     });
+    const MAX_ATTEMPTS = 3;
+    const TIMEOUT_MS = 20000;
+    let resp = null;
+    let lastNetErr = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+        try {
+          resp = await fetch(GLM_URL, {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + apiKey.trim(),
+              'Content-Type': 'application/json',
+            },
+            body: reqBody,
+            signal: ctrl.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        lastNetErr = null;
+        break; // 拿到 HTTP 响应（无论状态码），网络层成功，跳出重试
+      } catch (netErr) {
+        lastNetErr = netErr;
+        const c = netErr && netErr.cause;
+        console.warn(`[transform/retry] 第 ${attempt}/${MAX_ATTEMPTS} 次网络失败:`,
+          netErr.name, netErr.message, c ? `| ${c.code || c.errno || ''} ${c.message || c.reason || ''}` : '');
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise(r => setTimeout(r, 600 * attempt)); // 递增退避
+        }
+      }
+    }
+    if (!resp) {
+      // 三次都失败在网络层，抛出最后一次异常交给下方统一处理
+      throw lastNetErr || new Error('GLM 网络请求失败（已重试）');
+    }
 
     // 先读取响应体文本（无论成功失败），再统一解析
     const respText = await resp.text();
