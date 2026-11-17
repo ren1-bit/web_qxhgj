@@ -10,6 +10,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
+  <!--
+    ===== 后端地址配置（仅前后端分离部署时需要改）=====
+    默认留空即可，程序会自动判断：
+      · 本地/预览环境 → http://localhost:3000
+      · 云端同源部署（前端+后端同一域名）→ 自动用当前域名
+    只有当前端和后端在两个不同域名时，才取消下面这行的注释并填入后端地址：
+    <script>window.API_BASE_OVERRIDE = 'https://你的后端域名';</script>
+  -->
 </head>
 <body>
   <!-- 飞灰画布（全屏覆盖，粉碎动画用） -->

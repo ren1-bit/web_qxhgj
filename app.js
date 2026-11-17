@@ -3,8 +3,41 @@
  * 单页应用：登录模拟 / 情绪转化 / 树洞 / 在线统计
  * ============================================================ */
 
-/* ===== 后端地址（部署后替换） ===== */
-const API_BASE = 'http://localhost:3000'; // 本地开发；部署后改为你的后端域名
+/* ===== 后端地址（运行时自动探测，兼容本地 / 静态预览 / 云端） =====
+ * 启动时依次探测候选地址，第一个 /api/health 可用的即采用。
+ * 候选顺序：
+ *   1) window.API_BASE_OVERRIDE —— 手动指定（前后端分离部署时在 index.html 配置）
+ *   2) http://localhost:3000     —— 本地开发 / WorkBuddy 预览 / 静态快照
+ *   3) ''（同源）                —— 云端前后端同源部署
+ * 这样无论从哪个地址打开，都能自动找到后端，不再依赖域名猜测。
+ */
+let API_BASE = (function () {
+  if (window.API_BASE_OVERRIDE) return String(window.API_BASE_OVERRIDE).replace(/\/+$/, '');
+  // 初始猜一个：本地地址优先（覆盖绝大多数本地/预览场景）
+  const h = location.hostname;
+  const isLocal = location.protocol === 'file:' || h === 'localhost' || h === '127.0.0.1';
+  return isLocal ? 'http://localhost:3000' : '';
+})();
+
+// 探测后端地址：返回真正可用的 API_BASE
+async function detectApiBase() {
+  if (window.API_BASE_OVERRIDE) return API_BASE; // 手动指定则不再探测
+  const candidates = [];
+  const push = (v) => { if (!candidates.includes(v)) candidates.push(v); };
+  push('http://localhost:3000'); // 本地/预览
+  push('');                       // 同源（云端）
+  for (const c of candidates) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2500);
+      const res = await fetch(c + '/api/health', { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) { API_BASE = c; return c; }
+    } catch (e) { /* 该候选不通，试下一个 */ }
+  }
+  return API_BASE; // 都不通，保留初始值，让请求走兜底
+}
+console.log('[情绪烘干机] 初始 API_BASE =', API_BASE || '(同源/当前域名)', '（启动时自动探测中…）');
 
 /* ===== 全局状态 ===== */
 const State = {
@@ -327,11 +360,11 @@ function showSafetyPrompt() {
 /* ===== 转化结果生成（调用后端 GLM AI） ===== */
 async function generateResult(input, intensity) {
   try {
-    const res = await fetch(API_BASE + '/api/transform', {
+    const res = await fetchWithTimeout(API_BASE + '/api/transform', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input, intensity }),
-    });
+    }, 15000); // AI 生成较慢，给 15 秒
     const data = await res.json();
     if (res.ok && data && data.content) {
       return { type: 'ai', content: data.content };
@@ -343,9 +376,10 @@ async function generateResult(input, intensity) {
     // 仍返回兜底文案，保证体验不中断
     return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
   } catch (e) {
-    // 后端完全不可达（网络错误/CORS）
-    console.error('[transform/前端] 请求失败:', e.name, e.message);
-    toast('AI 转化失败：无法连接后端');
+    // 后端完全不可达（网络错误/CORS/后端未部署）
+    console.error('[transform/前端] 请求失败:', e.name, e.message,
+      '| 请求地址:', (API_BASE || location.origin) + '/api/transform');
+    toast('AI 转化失败：连不上后端（请确认后端已部署，详见控制台 F12）');
     return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
   }
 }
@@ -585,13 +619,25 @@ function setLikedIds(arr) {
   localStorage.setItem('th_liked_ids', JSON.stringify(arr));
 }
 
+// 通用 fetch：带超时保护，避免请求挂起导致界面一直"加载中"
+async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // 从后端拉取全部言论
 async function fetchTreehole() {
   try {
-    const res = await fetch(API_BASE + '/api/treehole');
+    const res = await fetchWithTimeout(API_BASE + '/api/treehole', {}, 6000);
     const data = await res.json();
     return data.posts || [];
   } catch (e) {
+    console.error('[treehole/前端] 拉取失败:', e.name, e.message, '| 地址:', (API_BASE || location.origin) + '/api/treehole');
     return null; // 后端不可用时返回 null，调用方据此显示失败态
   }
 }
@@ -836,8 +882,11 @@ function checkFileProtocol() {
 /* ============================================================
  * 启动
  * ============================================================ */
-function init() {
+async function init() {
   checkFileProtocol();
+  // 先探测可用后端地址，再初始化各模块（确保树洞/AI 发往正确地址）
+  await detectApiBase();
+  console.log('[情绪烘干机] 最终 API_BASE =', API_BASE || '(同源/当前域名)');
   initEntry();
   initSetup();
   initNav();
