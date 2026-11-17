@@ -1,17 +1,24 @@
 /**
  * 情绪烘干机 - 极简后端
- * 仅提供「实时在线人数」与「历史浏览人次」统计，内存存储，无需数据库。
+ * 提供两类接口：
+ *   1. 树洞匿名留言（内存存储，GET/POST /api/treehole 及点赞、回复）
+ *   2. 情绪转化（POST /api/transform，调用智谱 GLM glm-4-flash）
  *
- * 部署步骤（Railway / Render / 本地均可）：
+ * 环境变量（云端平台需在设置页配置，本地写在 server/.env）：
+ *   - GLM_API_KEY  智谱 API Key（必填，否则 /api/transform 不可用）
+ *   - PORT         服务端口（选填，默认 3000）
+ *   注意：API Key 只存后端环境变量，绝不写进前端代码。
+ *
+ * 部署步骤（Cloudy / Railway / Render / 本地均可）：
  * 1. 进入 server 目录：cd server
  * 2. 安装依赖：npm install
- * 3. 启动服务：npm start  （默认监听 3000 端口，可用 PORT 环境变量覆盖）
+ * 3. 启动服务：npm start
  * 4. 前端 app.js 顶部常量 API_BASE 改为本服务地址
  *    - 本地开发：http://localhost:3000
- *    - 部署后：https://你的域名
+ *    - 部署后：https://你的后端域名
  *
- * 说明：内存存储，重启后在线数和浏览量归零，属预期行为。
- *       后端日志只打印 sessionId 与时间，绝不打印用户输入内容。
+ * 说明：树洞为内存存储，重启后清空，属演示阶段预期行为。
+ *       日志只打印接口名与时间，绝不打印用户输入与言论内容。
  */
 // 简易 .env 加载（无需 dotenv 依赖，自动读取 server/.env）
 const fs = require('fs');
