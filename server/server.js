@@ -200,12 +200,52 @@ app.post('/api/transform', async (req, res) => {
     res.json({ type: 'ai', content: content.trim() });
   } catch (e) {
     // 网络异常、超时、DNS 解析失败等
-    console.error('[transform/error] 网络异常:', e.name, e.message);
+    // Node fetch 的底层原因在 e.cause（如 ENOTFOUND / ECONNREFUSED / ETIMEDOUT / TLS 错误）
+    const cause = e && e.cause;
+    const causeCode = cause && (cause.code || cause.errno) || '';
+    const causeMsg = cause && (cause.message || cause.reason) || '';
+    const detail = `${e.name}: ${e.message}` + (cause ? ` | cause: ${causeCode} ${causeMsg}` : '');
+    console.error('[transform/error] 网络异常:', detail);
     res.status(500).json({
       error: '调用 GLM 网络异常',
-      errorDetail: `${e.name}: ${e.message}`,
+      errorDetail: detail,
     });
   }
+});
+
+/* ===== 网络诊断接口：排查沙箱出站网络是否可达智谱 =====
+ * 返回 Node 版本、fetch 可用性，以及对智谱域名 / 一个通用域名的实测请求结果。
+ * 只读诊断，不打印 Key。供云端排查 fetch failed 根因。
+ */
+app.get('/api/diag', async (req, res) => {
+  const out = {
+    node: process.version,
+    hasFetch: typeof fetch === 'function',
+    glmKeySet: !!(process.env.GLM_API_KEY && process.env.GLM_API_KEY.trim()),
+    tests: {},
+  };
+  const probe = async (name, url, opts) => {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(url, { ...opts, signal: ctrl.signal });
+      clearTimeout(timer);
+      const text = await r.text();
+      out.tests[name] = { ok: true, status: r.status, bodyHead: text.slice(0, 200) };
+    } catch (e) {
+      const c = e && e.cause;
+      out.tests[name] = {
+        ok: false,
+        error: `${e.name}: ${e.message}`,
+        cause: c ? `${c.code || c.errno || ''} ${c.message || c.reason || ''}`.trim() : null,
+      };
+    }
+  };
+  // 通用外网连通性
+  await probe('example', 'https://example.com');
+  // 智谱域名连通性（GET，非鉴权，仅测网络可达）
+  await probe('glm', GLM_URL, { method: 'GET' });
+  res.json(out);
 });
 
 /* ===== 托管前端静态文件（单端口同源部署）=====
