@@ -219,6 +219,16 @@
   <!-- Toast 提示 -->
   <div id="toast" class="toast hidden"></div>
 
+  <!-- WorkBuddy Cloud SDK：情绪记录云端持久化 / 微信 & WorkBuddy 登录 / 云端 LLM -->
+  <script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js"></script>
+  <script>
+    // 来自 workbuddy_cloud_service 的 publicConfig（应用 wbapp_9ey4Eqex6XMH1krYjP7waE）
+    window.WB_PUBLIC_CONFIG = {
+      endpoint: 'https://emotion-dryer.app.workbuddy.host',
+      oauthRelayBaseUrl: 'https://www.workbuddy.cn/v2/as/genie-baas/oauth',
+      publishableKey: 'wbpk_9ey4Eqex6XMH1krYjP7waE_ZOuN0VYKenVwRwNY60j5mA7o7I0Kqt5E',
+    };
+  </script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -10,6 +10,9 @@ server/.env
 # WorkBuddy 工作区数据
 .workbuddy/
 
+# 本地部署标记文件
+*.genie
+
 # 系统文件
 .DS_Store
 Thumbs.db

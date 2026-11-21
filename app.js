@@ -1,7 +1,26 @@
 /* ============================================================
  * 情绪烘干机 · 前端交互逻辑
- * 单页应用：登录模拟 / 情绪转化 / 树洞 / 在线统计
+ * 单页应用：登录 / 情绪转化 / 树洞 / 我的记录
+ * 接入 WorkBuddy Cloud Service：
+ *   · Auth：微信扫码登录、WorkBuddy 账号登录（保留原 UI 入口）
+ *   · Database：emotion_records（私密）、treehole_posts（公开可读）
+ *   · LLM：云端大模型替代原后端 GLM
  * ============================================================ */
+
+/* ===== WorkBuddy Cloud 客户端（启动时初始化一次） =====
+ * endpoint 与 publishableKey 来自 publicConfig（见 index.html）。
+ * 所有云数据库 / Auth / LLM 调用共用这一个实例。
+ */
+let cloud = null;
+function initCloud() {
+  if (cloud || !window.WorkBuddyCloud || !window.WB_PUBLIC_CONFIG) return;
+  cloud = window.WorkBuddyCloud.createWorkBuddyCloud({
+    endpoint: window.WB_PUBLIC_CONFIG.endpoint,
+    oauthRelayBaseUrl: window.WB_PUBLIC_CONFIG.oauthRelayBaseUrl,
+    publishableKey: window.WB_PUBLIC_CONFIG.publishableKey,
+  });
+}
+
 
 /* ===== 后端地址（运行时自动探测，兼容本地 / 静态预览 / 云端） =====
  * 启动时依次探测候选地址，第一个 /api/health 可用的即采用。
@@ -156,22 +175,120 @@ function rotatePlaceholder() {
  * 一、登录与入口
  * ============================================================ */
 function initEntry() {
-  // 微信/QQ 模拟登录
-  $$('.btn-login').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const provider = btn.dataset.provider;
+  // 微信登录 → cloud.auth signInWithOAuth wechat（保留原 UI 视觉，仅升级行为）
+  // 注意：OAuth 流程会跳转到 WeChat 扫码页，扫码后回到本站根路径，由 restoreAuth() 处理回调。
+  const wxBtn = $('.btn-login[data-provider="wechat"]');
+  if (wxBtn) {
+    wxBtn.addEventListener('click', async () => {
+      if (!cloud) { toast('云服务尚未就绪，请刷新重试'); return; }
       const overlay = $('#auth-overlay');
       overlay.classList.add('show');
-      setTimeout(() => {
+      try {
+        const { data, error } = await cloud.auth.signInWithOAuth({
+          provider: 'wechat',
+          redirectTo: location.origin,
+        });
+        if (error) {
+          overlay.classList.remove('show');
+          toast('微信登录未开启或失败：' + (error.message || error));
+          return;
+        }
+        if (data && data.url) {
+          location.assign(data.url); // 跳转 WeChat 扫码
+        }
+      } catch (e) {
         overlay.classList.remove('show');
-        enterSetup(provider);
-      }, 1600);
+        toast('微信登录异常：' + (e.message || e));
+      }
     });
-  });
-  // 游客进入
+  }
+  // QQ 登录按钮 → WorkBuddy 账号登录（保留原 UI 文案，因为 WorkBuddy 账号是平台统一登录）
+  const qqBtn = $('.btn-login[data-provider="qq"]');
+  if (qqBtn) {
+    qqBtn.addEventListener('click', async () => {
+      if (!cloud) { toast('云服务尚未就绪，请刷新重试'); return; }
+      const overlay = $('#auth-overlay');
+      overlay.classList.add('show');
+      try {
+        const back = new URL(location.href);
+        back.pathname = '/';
+        for (const key of ['code', 'state', 'provider']) back.searchParams.delete(key);
+        const { data, error } = await cloud.auth.signInWithOAuth({
+          provider: 'workbuddy',
+          redirectTo: back.toString(),
+        });
+        if (error) {
+          overlay.classList.remove('show');
+          toast('WorkBuddy 登录未开启或失败：' + (error.message || error));
+          return;
+        }
+        if (data && data.url) {
+          location.assign(data.url);
+        }
+      } catch (e) {
+        overlay.classList.remove('show');
+        toast('WorkBuddy 登录异常：' + (e.message || e));
+      }
+    });
+  }
+  // 游客进入（不登录，不保存记录）
   $('.btn-guest').addEventListener('click', () => {
     enterSetup('guest');
   });
+}
+
+/* ===== OAuth 回调分发：在路由守卫之前处理 ?code=...&state=...&provider=... =====
+ * 必须在 init() 启动早期调用，避免 unauthenticated 状态把回调 code 撕掉。
+ */
+async function restoreAuth() {
+  if (!cloud) return false;
+  const url = new URL(location.href);
+  if (!url.searchParams.has('code') && !url.searchParams.has('error')) {
+    return false; // 普通访问，不是回调
+  }
+  const provider = url.searchParams.get('provider');
+  if (provider !== 'workbuddy' && provider !== 'wechat') {
+    if (url.searchParams.has('error')) {
+      toast('登录授权失败：' + (url.searchParams.get('error') || ''));
+      for (const k of ['code', 'state', 'provider', 'error', 'error_description']) url.searchParams.delete(k);
+      history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    }
+    return false;
+  }
+  const handleCallback = provider === 'workbuddy'
+    ? cloud.auth.handleWorkBuddyCallback
+    : cloud.auth.handleWechatWebCallback;
+  if (typeof handleCallback !== 'function') {
+    toast('当前 SDK 版本不支持该登录方式，请联系应用管理员');
+    return false;
+  }
+  try {
+    const { data: session, error } = await handleCallback.call(cloud.auth);
+    if (error) {
+      toast('登录失败：' + (error.message || error));
+    } else if (session) {
+      // 清掉 code/state/provider，保留业务参数
+      for (const key of ['code', 'state', 'provider']) url.searchParams.delete(key);
+      history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+      enterSetupFromSession(session);
+      return true;
+    }
+  } catch (e) {
+    toast('登录回调异常：' + (e.message || e));
+  }
+  return false;
+}
+
+/* ===== 已有会话恢复（普通访问时检查是否已登录） ===== */
+async function tryRestoreSession() {
+  if (!cloud) return null;
+  try {
+    const { data: session, error } = await cloud.auth.getSession();
+    if (error || !session) return null;
+    return session;
+  } catch (e) {
+    return null;
+  }
 }
 
 function enterSetup(provider) {
@@ -180,6 +297,26 @@ function enterSetup(provider) {
   const defaultAvatar = Math.random() < 0.5 ? 'male' : 'female';
   State.user.avatar = defaultAvatar;
   renderAvatarPicker(defaultAvatar);
+  showView('setup');
+}
+
+/* OAuth 登录成功后，从 session 预填昵称/头像，进入"身份设置"页 */
+function enterSetupFromSession(session) {
+  const provider = (session && session.user && session.user.appProvider) || 'workbuddy';
+  const u = (session && session.user) || {};
+  State.user = {
+    provider,
+    avatar: null,
+    nick: u.name || '',
+    gender: 'none',
+    session,
+  };
+  const defaultAvatar = Math.random() < 0.5 ? 'male' : 'female';
+  State.user.avatar = defaultAvatar;
+  renderAvatarPicker(defaultAvatar);
+  // 预填昵称（用户可改）
+  const nickInput = $('#input-nick');
+  if (nickInput && u.name) nickInput.value = u.name;
   showView('setup');
 }
 
@@ -365,29 +502,71 @@ function showSafetyPrompt() {
   });
 }
 
-/* ===== 转化结果生成（调用后端 GLM AI） ===== */
-async function generateResult(input, intensity) {
+/* ===== 转化结果生成（调用云端 LLM，替代原后端 GLM） ===== */
+/* 优先选用 GLM 系列（与原项目一致），否则取第一个可用模型。
+ * LLM API 强制 stream:true，这里仍以"一次性收集完整文本"的形式返回，
+ * 与原 generateResult 的调用约定保持一致，避免改动 UI 流程。
+ */
+let _cachedLlmModel = null;
+async function pickLlmModel() {
+  if (_cachedLlmModel) return _cachedLlmModel;
+  if (!cloud) return null;
   try {
-    const res = await fetchWithTimeout(API_BASE + '/api/transform', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input, intensity }),
-    }, 15000); // AI 生成较慢，给 15 秒
-    const data = await res.json();
-    if (res.ok && data && data.content) {
-      return { type: 'ai', content: data.content };
-    }
-    // 后端返回了错误信息，打印到控制台方便排查
-    const errMsg = (data && (data.errorDetail || data.error)) || 'AI 返回为空';
-    console.error('[transform/前端] 后端报错:', data && data.error, '| 详情:', errMsg);
-    if (data && data.error) toast('AI 转化失败：' + data.error + '（详情见控制台 F12）');
-    // 仍返回兜底文案，保证体验不中断
-    return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
+    const models = await cloud.llm.models.list();
+    if (!Array.isArray(models) || models.length === 0) return null;
+    // 优先 GLM 系列日常主力
+    const preferred =
+      models.find(m => m.disabled !== true && m.id === 'glm-4.6') ||
+      models.find(m => m.disabled !== true && /^glm-/.test(m.id)) ||
+      models.find(m => m.disabled !== true);
+    _cachedLlmModel = preferred || null;
+    return _cachedLlmModel;
   } catch (e) {
-    // 后端完全不可达（网络错误/CORS/后端未部署）
-    console.error('[transform/前端] 请求失败:', e.name, e.message,
-      '| 请求地址:', (API_BASE || location.origin) + '/api/transform');
-    toast('AI 转化失败：连不上后端（请确认后端已部署，详见控制台 F12）');
+    console.error('[llm] 获取模型列表失败:', e.message || e);
+    return null;
+  }
+}
+
+const LLM_SYSTEM_PROMPT = '你是一个温暖、幽默的解压助手。用户会向你倾诉生活和职场的烦恼。请你把他的话改写成一段搞笑脱口秀或者一首豁达的诗。要求：不说教、不评判，带一点发疯文学或苏东坡的豁达感，字数100字以内。';
+
+async function generateResult(input, intensity) {
+  if (!cloud) {
+    toast('云服务未就绪，AI 转化不可用');
+    return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
+  }
+  try {
+    const model = await pickLlmModel();
+    if (!model) {
+      toast('当前没有可用的 AI 模型');
+      return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
+    }
+    const messages = [
+      { role: 'system', content: LLM_SYSTEM_PROMPT },
+      { role: 'user', content: input.trim().slice(0, 500) },
+    ];
+    let content = '';
+    for await (const chunk of cloud.llm.chat.completions.create({
+      model: model.id,
+      messages,
+      stream: true,
+      temperature: 1,
+      stream_options: { include_usage: true },
+    })) {
+      const delta = chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
+      if (delta && delta.content) content += delta.content;
+    }
+    content = (content || '').trim();
+    if (!content) {
+      toast('AI 返回为空，请重试');
+      return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
+    }
+    return { type: 'ai', content };
+  } catch (e) {
+    console.error('[llm] 调用失败:', e && (e.message || e));
+    const code = e && e.error && e.error.code;
+    if (code && code.indexOf('auth_') === 0) toast('云服务鉴权失败，请稍后重试');
+    else if (code && code.indexOf('quota_') === 0) toast('AI 配额已用尽');
+    else toast('AI 转化失败：' + (e && (e.message || e)));
     return { type: 'ai', content: '烘干机今天有点累，但它还是想告诉你：不管怎样，你已经做得很好了。' };
   }
 }
@@ -499,31 +678,85 @@ function startAshAnimation(rect, onDone) {
 }
 
 /* ============================================================
- * 三、我的情绪记录（仅登录用户）
+ * 三、我的情绪记录（仅登录用户，云端持久化）
  * ============================================================ */
-function getRecords() {
-  try { return JSON.parse(localStorage.getItem('dryer_records') || '[]'); }
-  catch { return []; }
+/* 数据库字段映射：
+ *   emotion_records.id            ← 云端自增主键
+ *   emotion_records.owner_id       ← auth.uid() 自动填充（前端不传）
+ *   emotion_records.emotion_input  ← State.lastInput
+ *   emotion_records.result_content ← result.content
+ *   emotion_records.result_type    ← result.type
+ *   emotion_records.result_html    ← result.html（仅色卡类型有值）
+ *   emotion_records.intensity      ← State.lastIntensity
+ *   emotion_records.created_at      ← now() 自动填充
+ */
+async function getRecords() {
+  if (!cloud) return [];
+  const { data, error } = await cloud.database
+    .from('emotion_records')
+    .select('id, emotion_input, result_content, result_type, result_html, intensity, created_at')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) {
+    console.error('[records] 读取云端失败:', error.message || error);
+    return [];
+  }
+  return (data || []).map(r => ({
+    id: String(r.id),
+    input: r.emotion_input || '',
+    result: r.result_content || '',
+    resultType: r.result_type || 'ai',
+    resultHtml: r.result_html || null,
+    time: new Date(r.created_at).getTime(),
+  }));
 }
-function saveRecords(list) {
-  localStorage.setItem('dryer_records', JSON.stringify(list));
-}
-function saveRecord(result) {
+async function saveRecord(result) {
   if (State.user.provider === 'guest') return; // 游客不保存
-  const list = getRecords();
-  list.unshift({
-    id: 'r_' + Date.now() + '_' + randStr(4),
-    input: State.lastInput,
-    result: result.content || '',
-    resultType: result.type,
-    resultHtml: result.html || null,
-    time: Date.now(),
-  });
-  // 最多保留 50 条
-  if (list.length > 50) list.length = 50;
-  saveRecords(list);
+  if (!cloud) { toast('云服务未就绪，记录未保存'); return; }
+  const { error } = await cloud.database
+    .from('emotion_records')
+    .insert({
+      emotion_input: State.lastInput,
+      result_content: result.content || '',
+      result_type: result.type || 'ai',
+      result_html: result.html || null,
+      intensity: State.lastIntensity || null,
+      owner_name: (State.user.nick) || null,
+    });
+  if (error) {
+    console.error('[records] 写入云端失败:', error.message || error);
+    if (error.code === '42501') toast('登录已失效，请重新登录后再保存');
+    else toast('记录保存失败：' + (error.message || error));
+  }
 }
-function renderRecords() {
+async function deleteRecord(id) {
+  if (!cloud) return false;
+  const { data, error } = await cloud.database
+    .from('emotion_records')
+    .delete()
+    .eq('id', Number(id))
+    .select();
+  if (error) {
+    console.error('[records] 删除失败:', error.message || error);
+    return false;
+  }
+  return Array.isArray(data) ? data.length > 0 : true;
+}
+async function clearAllRecords() {
+  if (!cloud) return false;
+  // 删除当前 owner 全部记录（RLS 自动限定 owner_id = auth.uid()）
+  const { data, error } = await cloud.database
+    .from('emotion_records')
+    .delete()
+    .neq('id', -1) // 占位条件，触发删除所有可见行
+    .select();
+  if (error) {
+    console.error('[records] 清空失败:', error.message || error);
+    return false;
+  }
+  return true;
+}
+async function renderRecords() {
   const wrap = $('#records-list');
   if (State.user.provider === 'guest') {
     $('#records-list').innerHTML = '';
@@ -548,7 +781,10 @@ function renderRecords() {
   }
   const tip = $('#records-login-tip');
   if (tip) tip.remove();
-  const list = getRecords();
+  // 加载态
+  wrap.innerHTML = '<div class="records-empty">加载中…</div>';
+  $('#btn-clear-records').classList.add('hidden');
+  const list = await getRecords();
   $('#btn-clear-records').classList.toggle('hidden', list.length === 0);
   if (list.length === 0) {
     wrap.innerHTML = '<div class="records-empty">还没有记录，去烘干一次吧</div>';
@@ -577,12 +813,15 @@ function renderRecords() {
     `;
   }).join('');
   $$('.record-del').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
-      const filtered = getRecords().filter(r => r.id !== id);
-      saveRecords(filtered);
-      renderRecords();
-      toast('已删除');
+      const ok = await deleteRecord(id);
+      if (ok) {
+        toast('已删除');
+        renderRecords();
+      } else {
+        toast('删除失败，请重试');
+      }
     });
   });
 }
@@ -592,11 +831,15 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 function initRecords() {
-  $('#btn-clear-records').addEventListener('click', () => {
+  $('#btn-clear-records').addEventListener('click', async () => {
     if (confirm('确定清空全部记录吗？此操作不可恢复。')) {
-      saveRecords([]);
-      renderRecords();
-      toast('已清空全部记录');
+      const ok = await clearAllRecords();
+      if (ok) {
+        renderRecords();
+        toast('已清空全部记录');
+      } else {
+        toast('清空失败，请重试');
+      }
     }
   });
 }
@@ -638,15 +881,30 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
   }
 }
 
-// 从后端拉取全部言论
+// 从云端数据库拉取全部言论
 async function fetchTreehole() {
+  if (!cloud) return [];
   try {
-    const res = await fetchWithTimeout(API_BASE + '/api/treehole', {}, 6000);
-    const data = await res.json();
-    return data.posts || [];
+    const { data, error } = await cloud.database
+      .from('treehole_posts')
+      .select('id, content, likes, replies, created_at')
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (error) {
+      console.error('[treehole] 读取失败:', error.message || error);
+      return [];
+    }
+    return (data || []).map(p => ({
+      id: String(p.id),
+      content: p.content || '',
+      anon: '匿名网友', // 云端不暴露作者身份
+      time: new Date(p.created_at).getTime(),
+      likes: p.likes || 0,
+      replies: Array.isArray(p.replies) ? p.replies : [],
+    }));
   } catch (e) {
-    console.error('[treehole/前端] 拉取失败:', e.name, e.message, '| 地址:', (API_BASE || location.origin) + '/api/treehole');
-    return null; // 后端不可用时返回 null，调用方据此显示失败态
+    console.error('[treehole] 读取异常:', e.message || e);
+    return [];
   }
 }
 
@@ -707,7 +965,7 @@ function renderTreehole(posts) {
 
 // 绑定点赞与回复（每次渲染后重新绑定）
 function bindTreeholeEvents() {
-  // 点赞：调后端 toggle，本地用 th_liked_ids 记红心
+  // 点赞：调云端 RPC like_post/unlike_post，本地用 th_liked_ids 记红心
   $$('.th-like').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
@@ -715,18 +973,23 @@ function bindTreeholeEvents() {
       const isLiked = likedIds.includes(id);
       btn.disabled = true;
       try {
-        const res = await fetch(API_BASE + '/api/treehole/' + id + '/like', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ liked: !isLiked }),
-        });
-        const data = await res.json();
+        if (!cloud) { toast('云服务未就绪'); return; }
+        const rpcName = isLiked ? 'unlike_post' : 'like_post';
+        const { data, error } = await cloud.database.rpc(rpcName, { post_id: Number(id) });
+        if (error) {
+          if (error.code === '42501' || (error.message && error.message.indexOf('auth') >= 0)) {
+            toast('请先登录后再点赞');
+          } else {
+            toast('点赞失败：' + (error.message || error));
+          }
+          return;
+        }
         if (isLiked) likedIds = likedIds.filter(i => i !== id);
         else likedIds.push(id);
         setLikedIds(likedIds);
         // 同步更新本地缓存的赞数，避免等轮询才变
         const post = State.treeholePosts.find(p => p.id === id);
-        if (post) post.likes = data.likes;
+        if (post) post.likes = (typeof data === 'number') ? data : (post.likes + (isLiked ? -1 : 1));
         renderTreehole(State.treeholePosts);
       } catch (e) {
         toast('网络异常，稍后再试');
@@ -735,7 +998,7 @@ function bindTreeholeEvents() {
       }
     });
   });
-  // 回复：调后端，用返回的最新列表重渲染
+  // 回复：调云端 RPC reply_post
   $$('.th-reply-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
@@ -746,16 +1009,25 @@ function bindTreeholeEvents() {
         toast('检测到敏感内容，如需帮助请拨打心理援助热线 12356');
         return;
       }
+      if (!cloud) { toast('云服务未就绪'); return; }
       btn.disabled = true;
       try {
-        const res = await fetch(API_BASE + '/api/treehole/' + id + '/reply', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: text }),
+        const { data, error } = await cloud.database.rpc('reply_post', {
+          post_id: Number(id),
+          reply_content: text,
         });
-        const data = await res.json();
-        State.treeholePosts = data.posts || [];
-        State.treeholeSignature = thSignature(State.treeholePosts);
+        if (error) {
+          if (error.code === '42501' || (error.message && error.message.indexOf('auth') >= 0)) {
+            toast('请先登录后再回复');
+          } else {
+            toast('回复失败：' + (error.message || error));
+          }
+          btn.disabled = false;
+          return;
+        }
+        // data 是更新后的 replies JSONB 数组
+        const post = State.treeholePosts.find(p => p.id === id);
+        if (post && Array.isArray(data)) post.replies = data;
         renderTreehole(State.treeholePosts);
         toast('回复成功');
       } catch (e) {
@@ -774,10 +1046,6 @@ async function loadTreehole(silent = false) {
   }
   const posts = await fetchTreehole();
   State.treeholeLoading = false;
-  if (posts === null) {
-    if (!silent) $('#th-list').innerHTML = '<div class="th-empty">加载失败，稍后再试</div>';
-    return;
-  }
   const sig = thSignature(posts);
   State.treeholePosts = posts;
   if (silent) {
@@ -810,7 +1078,7 @@ function timeAgo(ts) {
   return formatDate(ts).slice(0, 10);
 }
 function initTreehole() {
-  // 发表言论：POST 到后端，服务端生成 id/时间戳/匿名标识
+  // 发表言论：写入云端 treehole_posts（需登录，RLS 自动填充 owner_id）
   $('#btn-th-post').addEventListener('click', async () => {
     const input = $('#th-input');
     const text = input.value.trim();
@@ -819,20 +1087,24 @@ function initTreehole() {
       toast('检测到敏感内容，如需帮助请拨打心理援助热线 12356');
       return;
     }
+    if (!cloud) { toast('云服务未就绪'); return; }
     const btn = $('#btn-th-post');
     btn.disabled = true;
     try {
-      const res = await fetch(API_BASE + '/api/treehole', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: text }),
-      });
-      const data = await res.json();
-      // 用后端返回的最新列表刷新（新帖已在顶部，按时间倒序）
-      State.treeholePosts = data.posts || [];
-      State.treeholeSignature = thSignature(State.treeholePosts);
+      const { error } = await cloud.database
+        .from('treehole_posts')
+        .insert({ content: text.trim().slice(0, 200) });
+      if (error) {
+        if (error.code === '42501' || (error.message && error.message.indexOf('auth') >= 0)) {
+          toast('发表树洞需要先登录');
+        } else {
+          toast('发表失败：' + (error.message || error));
+        }
+        btn.disabled = false;
+        return;
+      }
       input.value = '';
-      renderTreehole(State.treeholePosts);
+      await loadTreehole();
       toast('已匿名发表');
     } catch (e) {
       toast('发表失败，请检查网络');
@@ -891,15 +1163,28 @@ function checkFileProtocol() {
  * 启动
  * ============================================================ */
 async function init() {
-  checkFileProtocol();
-  // 先探测可用后端地址，再初始化各模块（确保树洞/AI 发往正确地址）
-  await detectApiBase();
-  console.log('[情绪烘干机] 最终 API_BASE =', API_BASE || '(同源/当前域名)');
+  // 初始化 cloud 客户端（endpoint/publishableKey 已嵌入 index.html）
+  initCloud();
+
+  // 先绑定所有事件监听器（不依赖视图状态）
   initEntry();
   initSetup();
   initNav();
   initDryerStages();
   initTreehole();
   initRecords();
+
+  // 再处理 OAuth 回调或恢复已有会话（决定显示哪个视图）
+  // OAuth 回调必须在任何路由守卫之前处理，避免 code 被撕掉
+  const isCallback = await restoreAuth();
+  if (!isCallback) {
+    const session = await tryRestoreSession();
+    if (session) {
+      enterSetupFromSession(session);
+    } else {
+      // 未登录：显示入口页
+      showView('entry');
+    }
+  }
 }
 document.addEventListener('DOMContentLoaded', init);
